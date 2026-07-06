@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "ForestTrack",
+    "slug": "foresttrack",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.foresttrack.mobile"
+    },
+    "android": {
+      "package": "com.foresttrack.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#1B4332"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-camera",
+      "expo-location"
+    ],
+    "extra": {
+      "router": {
+        "root": "src/navigation"
+      },
+      "eas": {
+        "projectId": "e7818941-50bb-4017-a6c2-ce28bf459202"
+      }
+    }
+  }
+}
