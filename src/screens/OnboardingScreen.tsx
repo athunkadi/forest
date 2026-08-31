@@ -47,7 +47,7 @@ export function OnboardingScreen({ navigation }: Props) {
     }
 
     await setOnboarded(true);
-    navigation.replace(screens.home);
+    navigation.replace(screens.login);
   }
 
   return (

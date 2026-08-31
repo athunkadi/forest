@@ -11,6 +11,15 @@ type Props = NativeStackScreenProps<RootStackParamList, typeof screens.captureSu
 export function CaptureSuccessScreen({ navigation, route }: Props) {
   const { notes, gps } = useAppStore();
   const note = notes.find((item) => item.id === route.params?.noteId);
+  const summaryGps = note?.gps ?? gps;
+  const capturedAt = note?.createdAt ? new Date(note.createdAt) : new Date();
+  const capturedTime = capturedAt.toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 
   return (
     <LinearGradient colors={[colors.forest, colors.canopy]} style={styles.gradient}>
@@ -22,8 +31,9 @@ export function CaptureSuccessScreen({ navigation, route }: Props) {
         <Text style={styles.subtitle}>Catatan disimpan di perangkat. Akan otomatis terkirim saat ada internet.</Text>
 
         <View style={styles.summaryCard}>
-          <SummaryRow icon="📍" label="Koordinat" value={`${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)}`} />
-          <SummaryRow icon="🕙" label="Waktu" value="01 Mei 2026, 10:44 WIB" />
+          <SummaryRow icon="📍" label="Koordinat" value={`${summaryGps.latitude.toFixed(6)}, ${summaryGps.longitude.toFixed(6)}`} />
+          <SummaryRow icon="🕙" label="Waktu" value={`${capturedTime} WIB`} />
+          <SummaryRow icon="📷" label="Foto" value={note?.photoUri ? "Tersimpan" : "Tidak tersedia"} />
           <SummaryRow icon="📂" label="Status" value={note?.syncStatus === "pending" ? "Tersimpan lokal" : "Tersinkron"} />
         </View>
 

@@ -1,74 +1,264 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useState } from "react";
-import { Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from "react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Location from "expo-location";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from "react-native";
+import MapView, { Callout, Circle, LocalTile, Marker, Polygon, Region } from "react-native-maps";
 import { BottomNav } from "../components/BottomNav";
 import { StatusBarCustom } from "../components/StatusBarCustom";
 import { colors } from "../constants/colors";
 import { screens } from "../constants/screens";
+import { getLastKnownLocation, saveLastKnownLocation } from "../storage/localStorage";
 import { useAppStore } from "../store/useAppStore";
-import { RootStackParamList } from "../types";
+import { RootStackParamList, StoredLocation } from "../types";
 
 type Props = NativeStackScreenProps<RootStackParamList, typeof screens.map>;
 type Layer = "topo" | "satelit";
 
-const pins = [
-  { left: "35%", top: "26%", color: colors.leaf },
-  { left: "45%", top: "35%", color: colors.leaf },
-  { left: "31%", top: "43%", color: colors.leaf },
-  { left: "72%", top: "30%", color: colors.accent }
-] as const;
+const DEFAULT_DELTA = {
+  latitudeDelta: 0.012,
+  longitudeDelta: 0.012
+};
+
+const offlineTileRoot = `${(FileSystem.documentDirectory ?? "").replace("file://", "")}offline-tiles`;
+const offlineTileTemplate = `${offlineTileRoot}/{z}/{x}/{y}.png`;
+const mapsApiKeyConfigured = true;
+
+function toRegion(location: Pick<StoredLocation, "latitude" | "longitude">): Region {
+  return {
+    latitude: location.latitude,
+    longitude: location.longitude,
+    ...DEFAULT_DELTA
+  };
+}
+
+function getLocationTimestamp() {
+  return new Date().toISOString();
+}
+
+function getLocationMessage(location: StoredLocation | null, permissionDenied: boolean) {
+  if (location) {
+    const accuracy = location.accuracy ? `±${Math.round(location.accuracy)}m` : "GPS aktif";
+    return `${accuracy} · ${new Date(location.updatedAt).toLocaleTimeString("id-ID", {
+      hour: "2-digit",
+      minute: "2-digit"
+    })}`;
+  }
+
+  return permissionDenied ? "Izin lokasi belum aktif" : "Mencari lokasi device...";
+}
 
 export function MapScreen({ navigation }: Props) {
+  const mapRef = useRef<MapView | null>(null);
   const [layer, setLayer] = useState<Layer>("topo");
-  const { online } = useAppStore();
+  const [deviceLocation, setDeviceLocation] = useState<StoredLocation | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [loadingLocation, setLoadingLocation] = useState(true);
+  const [offlineTilesReady, setOfflineTilesReady] = useState(false);
+  const { gps, notes, online } = useAppStore();
+
+  const fallbackRegion = useMemo(() => toRegion(gps), [gps]);
+  const mapRegion = useMemo(() => (deviceLocation ? toRegion(deviceLocation) : fallbackRegion), [deviceLocation, fallbackRegion]);
+  const blockPolygon = useMemo(
+    () => [
+      { latitude: gps.latitude + 0.0023, longitude: gps.longitude - 0.0031 },
+      { latitude: gps.latitude + 0.0028, longitude: gps.longitude + 0.0024 },
+      { latitude: gps.latitude - 0.0011, longitude: gps.longitude + 0.003 },
+      { latitude: gps.latitude - 0.0027, longitude: gps.longitude - 0.0017 }
+    ],
+    [gps]
+  );
+  const mapType = layer === "satelit" ? "satellite" : Platform.OS === "android" && offlineTilesReady ? "none" : "terrain";
+  const locationMessage = getLocationMessage(deviceLocation, permissionDenied);
+
+  useEffect(() => {
+    let mounted = true;
+    let subscription: Location.LocationSubscription | null = null;
+
+    async function prepareMap() {
+      try {
+        const [savedLocation, tileDirectory] = await Promise.all([
+          getLastKnownLocation(),
+          FileSystem.getInfoAsync(offlineTileRoot)
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+
+        if (savedLocation) {
+          setDeviceLocation(savedLocation);
+        }
+        setOfflineTilesReady(tileDirectory.exists);
+
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (!mounted) {
+          return;
+        }
+
+        if (permission.status !== "granted") {
+          setPermissionDenied(true);
+          setLoadingLocation(false);
+          return;
+        }
+
+        setPermissionDenied(false);
+
+        const current = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+          mayShowUserSettingsDialog: true
+        });
+        const currentLocation: StoredLocation = {
+          latitude: current.coords.latitude,
+          longitude: current.coords.longitude,
+          accuracy: current.coords.accuracy,
+          altitude: current.coords.altitude,
+          updatedAt: getLocationTimestamp()
+        };
+
+        if (!mounted) {
+          return;
+        }
+
+        setDeviceLocation(currentLocation);
+        setLoadingLocation(false);
+        mapRef.current?.animateToRegion(toRegion(currentLocation), 600);
+        await saveLastKnownLocation(currentLocation);
+
+        subscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Highest,
+            distanceInterval: 5,
+            timeInterval: 5000
+          },
+          (position) => {
+            const nextLocation: StoredLocation = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy,
+              altitude: position.coords.altitude,
+              updatedAt: getLocationTimestamp()
+            };
+            setDeviceLocation(nextLocation);
+            saveLastKnownLocation(nextLocation);
+          }
+        );
+      } catch {
+        if (mounted) {
+          setLoadingLocation(false);
+        }
+      }
+    }
+
+    prepareMap();
+
+    return () => {
+      mounted = false;
+      subscription?.remove();
+    };
+  }, []);
+
+  function recenterMap() {
+    mapRef.current?.animateToRegion(mapRegion, 600);
+  }
+
+  if (!mapsApiKeyConfigured) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        <StatusBarCustom online={online} />
+        <View style={styles.configCard}>
+          <Text style={styles.configTitle}>Peta belum dikonfigurasi</Text>
+          <Text style={styles.configText}>
+            APK Android membutuhkan Google Maps API key. Set environment `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`
+            saat build, lalu rebuild APK.
+          </Text>
+        </View>
+        <BottomNav active={screens.map} />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBarCustom online={online} />
-      {/* TODO: Replace this simulated map with cached offline tiles and real polygon layers. */}
-      <View style={[styles.mapBase, layer === "satelit" && styles.satelliteBase]}>
-        {Array.from({ length: 9 }).map((_, index) => (
-          <View key={`h-${index}`} style={[styles.gridLineH, { top: `${index * 12}%` }]} />
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        initialRegion={mapRegion}
+        mapPadding={{ top: 110, right: 18, bottom: 210, left: 18 }}
+        mapType={mapType}
+        showsCompass={false}
+        showsMyLocationButton={false}
+        showsScale
+        showsUserLocation={!permissionDenied}
+        toolbarEnabled={false}
+        userLocationAnnotationTitle="Lokasi Anda"
+      >
+        {layer === "topo" && offlineTilesReady ? (
+          <LocalTile pathTemplate={offlineTileTemplate} tileSize={256} zIndex={1} />
+        ) : null}
+
+        <Polygon
+          coordinates={blockPolygon}
+          fillColor="rgba(64,145,108,0.18)"
+          strokeColor={colors.canopy}
+          strokeWidth={2}
+          tappable
+        />
+
+        {deviceLocation?.accuracy ? (
+          <Circle
+            center={deviceLocation}
+            fillColor="rgba(33,150,243,0.12)"
+            radius={Math.max(deviceLocation.accuracy, 12)}
+            strokeColor="rgba(33,150,243,0.32)"
+            strokeWidth={1}
+          />
+        ) : null}
+
+        {notes.map((note) => (
+          <Marker
+            key={note.id}
+            coordinate={{ latitude: note.gps.latitude, longitude: note.gps.longitude }}
+            pinColor={note.syncStatus === "synced" ? colors.leaf : colors.accent}
+            title={note.id}
+            description={`${note.category} · ${note.gps.block}`}
+          >
+            <Callout>
+              <View style={styles.callout}>
+                <Text style={styles.calloutTitle}>{note.id}</Text>
+                <Text style={styles.calloutText}>{note.category}</Text>
+                <Text style={styles.calloutMeta}>{note.gps.block}</Text>
+              </View>
+            </Callout>
+          </Marker>
         ))}
-        {Array.from({ length: 7 }).map((_, index) => (
-          <View key={`v-${index}`} style={[styles.gridLineV, { left: `${index * 16}%` }]} />
-        ))}
+      </MapView>
 
-        <View style={[styles.contour, styles.contourOne]} />
-        <View style={[styles.contour, styles.contourTwo]} />
-        <View style={[styles.contour, styles.contourThree]} />
-
-        <View style={[styles.polygon, styles.polygonA]}>
-          <Text style={styles.polygonText}>Blok A</Text>
+      {loadingLocation ? (
+        <View style={styles.loadingBadge}>
+          <ActivityIndicator color={colors.canopy} size="small" />
+          <Text style={styles.loadingText}>Mencari GPS</Text>
         </View>
-        <View style={[styles.polygon, styles.polygonB]}>
-          <Text style={styles.polygonText}>Blok B</Text>
-        </View>
-
-        {pins.map((pin, index) => (
-          <View key={index} style={[styles.pinWrap, { left: pin.left, top: pin.top }]}>
-            <View style={[styles.pin, { backgroundColor: pin.color }]} />
-          </View>
-        ))}
-
-        <View style={styles.currentLocation}>
-          <View style={styles.currentPulse} />
-          <View style={styles.currentDot} />
-        </View>
-      </View>
+      ) : null}
 
       <View style={styles.topBar}>
         <View style={styles.searchBox}>
-          <Text style={styles.searchIcon}>🔍</Text>
+          <Text style={styles.searchIcon}>⌕</Text>
           <TextInput
-            placeholder="Cari lokasi..."
+            placeholder="Cari blok atau titik..."
             placeholderTextColor={colors.gray}
             style={styles.searchInput}
             returnKeyType="search"
           />
         </View>
-        <Pressable style={({ pressed }) => [styles.squareButton, pressed && styles.pressed]}>
-          <Text style={styles.squareButtonText}>🧭</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Pusatkan ke lokasi device"
+          style={({ pressed }) => [styles.squareButton, pressed && styles.pressed]}
+          onPress={recenterMap}
+        >
+          <Text style={styles.squareButtonText}>◎</Text>
         </Pressable>
       </View>
 
@@ -76,6 +266,7 @@ export function MapScreen({ navigation }: Props) {
         {(["topo", "satelit"] as const).map((item) => (
           <Pressable
             key={item}
+            accessibilityRole="button"
             style={[styles.layerButton, layer === item && styles.layerActive]}
             onPress={() => setLayer(item)}
           >
@@ -90,13 +281,15 @@ export function MapScreen({ navigation }: Props) {
 
       <View style={styles.infoCard}>
         <View style={styles.infoHeader}>
-          <Text style={styles.infoTitle}>Kawasan Hutan Lindung Blok A</Text>
-          <Text style={styles.activeText}>● Aktif</Text>
+          <Text style={styles.infoTitle}>{gps.area} {gps.block}</Text>
+          <Text style={[styles.activeText, permissionDenied && styles.warningText]}>
+            {permissionDenied ? "● Izin lokasi" : "● GPS aktif"}
+          </Text>
         </View>
         <View style={styles.infoMetaRow}>
-          <Text style={styles.infoMeta}>📍 4 titik hari ini</Text>
-          <Text style={styles.infoMeta}>📐 245 ha</Text>
-          <Text style={styles.infoMeta}>🌿 Topo offline ✓</Text>
+          <Text style={styles.infoMeta}>📍 {notes.length} titik tersimpan</Text>
+          <Text style={styles.infoMeta}>📡 {locationMessage}</Text>
+          <Text style={styles.infoMeta}>🌿 Offline tile {offlineTilesReady ? "siap" : "belum ada"}</Text>
         </View>
         <Pressable style={({ pressed }) => [styles.cta, pressed && styles.pressed]} onPress={() => navigation.navigate(screens.capture)}>
           <Text style={styles.ctaText}>＋ Catat Titik di Sini</Text>
@@ -113,133 +306,52 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.offwhite
   },
-  mapBase: {
-    ...StyleSheet.absoluteFillObject,
-    top: 28,
-    backgroundColor: colors.offwhite
-  },
-  satelliteBase: {
-    backgroundColor: "#9DB593"
-  },
-  gridLineH: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: "#B7E4C766"
-  },
-  gridLineV: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: "#B7E4C766"
-  },
-  contour: {
-    position: "absolute",
-    borderWidth: 1.5,
-    borderColor: "#40916C44",
-    borderRadius: 100,
-    transform: [{ rotate: "-15deg" }]
-  },
-  contourOne: {
-    width: 330,
-    height: 115,
-    top: 90,
-    left: -35
-  },
-  contourTwo: {
-    width: 420,
-    height: 135,
-    top: 180,
-    left: 20
-  },
-  contourThree: {
-    width: 360,
-    height: 110,
-    bottom: 205,
-    left: -25
-  },
-  polygon: {
-    position: "absolute",
-    borderWidth: 2,
-    borderColor: colors.leaf,
-    borderStyle: "dashed",
-    backgroundColor: "#40916C22",
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  polygonA: {
-    width: 170,
-    height: 145,
-    left: "20%",
-    top: "16%",
-    borderTopLeftRadius: 40,
-    borderTopRightRadius: 18,
-    borderBottomRightRadius: 48,
-    borderBottomLeftRadius: 26,
-    transform: [{ rotate: "8deg" }]
-  },
-  polygonB: {
-    width: 145,
-    height: 105,
-    right: "6%",
-    top: "14%",
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 42,
-    borderBottomRightRadius: 18,
-    borderBottomLeftRadius: 34,
-    borderColor: colors.canopy,
-    transform: [{ rotate: "-10deg" }]
-  },
-  polygonText: {
-    color: colors.canopy,
-    fontSize: 11,
-    fontWeight: "900"
-  },
-  pinWrap: {
-    position: "absolute",
-    marginLeft: -12,
-    marginTop: -24
-  },
-  pin: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderBottomLeftRadius: 2,
-    borderWidth: 2,
-    borderColor: colors.white,
-    transform: [{ rotate: "-45deg" }],
+  configCard: {
+    margin: 16,
+    marginTop: 72,
+    borderRadius: 16,
+    backgroundColor: colors.white,
+    padding: 18,
     shadowColor: colors.dark,
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 4
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3
   },
-  currentLocation: {
+  configTitle: {
+    color: colors.dark,
+    fontSize: 18,
+    fontWeight: "900",
+    marginBottom: 8
+  },
+  configText: {
+    color: colors.gray,
+    fontSize: 13,
+    lineHeight: 21
+  },
+  map: {
+    ...StyleSheet.absoluteFillObject,
+    top: 28
+  },
+  loadingBadge: {
     position: "absolute",
-    left: "50%",
-    top: "55%",
-    width: 38,
-    height: 38,
-    marginLeft: -19,
-    marginTop: -19,
+    top: 100,
+    left: 14,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.white,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center"
+    gap: 8,
+    shadowColor: colors.dark,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 3
   },
-  currentPulse: {
-    position: "absolute",
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "rgba(33,150,243,0.18)"
-  },
-  currentDot: {
-    width: 17,
-    height: 17,
-    borderRadius: 9,
-    borderWidth: 3,
-    borderColor: colors.white,
-    backgroundColor: "#2196F3"
+  loadingText: {
+    color: colors.canopy,
+    fontSize: 12,
+    fontWeight: "900"
   },
   topBar: {
     position: "absolute",
@@ -266,7 +378,8 @@ const styles = StyleSheet.create({
   },
   searchIcon: {
     color: colors.gray,
-    fontSize: 14
+    fontSize: 18,
+    lineHeight: 20
   },
   searchInput: {
     flex: 1,
@@ -287,7 +400,10 @@ const styles = StyleSheet.create({
     elevation: 4
   },
   squareButtonText: {
-    fontSize: 18
+    color: colors.forest,
+    fontSize: 24,
+    lineHeight: 26,
+    fontWeight: "900"
   },
   layerToggle: {
     position: "absolute",
@@ -368,6 +484,9 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "900"
   },
+  warningText: {
+    color: colors.accent
+  },
   infoMetaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -388,6 +507,24 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 13,
     fontWeight: "900"
+  },
+  callout: {
+    width: 130,
+    gap: 2
+  },
+  calloutTitle: {
+    color: colors.dark,
+    fontSize: 13,
+    fontWeight: "900"
+  },
+  calloutText: {
+    color: colors.canopy,
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  calloutMeta: {
+    color: colors.gray,
+    fontSize: 11
   },
   pressed: {
     opacity: 0.78

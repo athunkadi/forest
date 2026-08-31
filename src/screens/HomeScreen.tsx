@@ -1,6 +1,6 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { LinearGradient } from "expo-linear-gradient";
-import { SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ActivityItem } from "../components/ActivityItem";
 import { BottomNav } from "../components/BottomNav";
 import { QuickActionCard } from "../components/QuickActionCard";
@@ -14,8 +14,14 @@ import { RootStackParamList } from "../types";
 type Props = NativeStackScreenProps<RootStackParamList, typeof screens.home>;
 
 export function HomeScreen({ navigation }: Props) {
-  const { activities, gps, notes, online } = useAppStore();
+  const { activities, authUser, gps, notes, online } = useAppStore();
   const pendingCount = notes.filter((note) => note.syncStatus !== "synced").length;
+  const todayCount = notes.filter((note) => new Date(note.createdAt).toDateString() === new Date().toDateString()).length;
+  const todayActivities = activities.filter((activity) =>
+    activity.createdAt ? new Date(activity.createdAt).toDateString() === new Date().toDateString() : false
+  );
+  const displayName = authUser?.name ?? "Ahmad Fauzi";
+  const initials = authUser?.initials ?? "AF";
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -25,11 +31,16 @@ export function HomeScreen({ navigation }: Props) {
           <View style={styles.headerTop}>
             <View>
               <Text style={styles.greeting}>Selamat pagi,</Text>
-              <Text style={styles.name}>Ahmad Fauzi 👋</Text>
+              <Text style={styles.name}>{displayName} 👋</Text>
             </View>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>AF</Text>
-            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Buka profil"
+              style={({ pressed }) => [styles.avatar, pressed && styles.pressed]}
+              onPress={() => navigation.navigate(screens.profile)}
+            >
+              <Text style={styles.avatarText}>{initials}</Text>
+            </Pressable>
           </View>
 
           <View style={styles.gpsCard}>
@@ -44,9 +55,9 @@ export function HomeScreen({ navigation }: Props) {
         </LinearGradient>
 
         <View style={styles.statsRow}>
-          <StatCard label="Titik Hari Ini" value="7" tone={colors.leaf} />
+          <StatCard label="Titik Hari Ini" value={String(todayCount)} tone={colors.leaf} />
           <StatCard label="Belum Tersinkron" value={String(pendingCount)} tone={colors.accent} />
-          <StatCard label="Total Tanaman" value={String(notes.length + 138)} tone={colors.canopy} />
+          <StatCard label="Total Catatan" value={String(notes.length)} tone={colors.canopy} />
         </View>
 
         <View style={styles.section}>
@@ -86,9 +97,24 @@ export function HomeScreen({ navigation }: Props) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Aktivitas Hari Ini</Text>
           <View style={styles.activityCard}>
-            {activities.slice(0, 5).map((activity, index, list) => (
-              <ActivityItem key={activity.id} activity={activity} showDivider={index < list.length - 1} />
-            ))}
+            {todayActivities.length > 0 ? (
+              todayActivities.slice(0, 5).map((activity, index, list) => (
+                <ActivityItem
+                  key={activity.id}
+                  activity={activity}
+                  showDivider={index < list.length - 1}
+                  onPress={
+                    activity.noteId
+                      ? () => navigation.navigate(screens.historyDetail, { noteId: activity.noteId as string })
+                      : undefined
+                  }
+                />
+              ))
+            ) : (
+              <View style={styles.emptyActivity}>
+                <Text style={styles.emptyActivityText}>Belum ada aktivitas pencatatan.</Text>
+              </View>
+            )}
           </View>
         </View>
       </ScrollView>
@@ -136,6 +162,9 @@ const styles = StyleSheet.create({
   avatarText: {
     color: colors.white,
     fontWeight: "900"
+  },
+  pressed: {
+    opacity: 0.75
   },
   gpsCard: {
     marginTop: 16,
@@ -201,5 +230,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2
+  },
+  emptyActivity: {
+    padding: 18,
+    alignItems: "center"
+  },
+  emptyActivityText: {
+    color: colors.gray,
+    fontSize: 12,
+    fontWeight: "700"
   }
 });

@@ -1,31 +1,180 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Location from "expo-location";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { colors } from "../constants/colors";
 import { screens } from "../constants/screens";
+import { getLastKnownLocation, saveLastKnownLocation } from "../storage/localStorage";
 import { useAppStore } from "../store/useAppStore";
-import { RootStackParamList } from "../types";
+import { GpsPoint, RootStackParamList } from "../types";
 
 type Props = NativeStackScreenProps<RootStackParamList, typeof screens.capture>;
+const photoDirectory = `${FileSystem.documentDirectory ?? ""}capture-photos/`;
+
+async function persistPhoto(uri?: string, timestamp?: string) {
+  if (!uri || !FileSystem.documentDirectory) {
+    return uri;
+  }
+
+  const directory = await FileSystem.getInfoAsync(photoDirectory);
+  if (!directory.exists) {
+    await FileSystem.makeDirectoryAsync(photoDirectory, { intermediates: true });
+  }
+
+  const filename = `${(timestamp ?? new Date().toISOString()).replace(/[:.]/g, "-")}.jpg`;
+  const destination = `${photoDirectory}${filename}`;
+  await FileSystem.copyAsync({ from: uri, to: destination });
+  return destination;
+}
 
 export function CaptureScreen({ navigation }: Props) {
+  const cameraRef = useRef<CameraView | null>(null);
   const { gps } = useAppStore();
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [captureGps, setCaptureGps] = useState<GpsPoint>(gps);
+  const [capturing, setCapturing] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [capturedAt, setCapturedAt] = useState(new Date().toISOString());
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function detectLocation() {
+      const savedLocation = await getLastKnownLocation();
+      if (savedLocation && mounted) {
+        setCaptureGps((current) => ({
+          ...current,
+          latitude: savedLocation.latitude,
+          longitude: savedLocation.longitude,
+          accuracy: savedLocation.accuracy ? Math.round(savedLocation.accuracy) : current.accuracy,
+          altitude: savedLocation.altitude ? Math.round(savedLocation.altitude) : current.altitude
+        }));
+      }
+
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        return;
+      }
+
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Highest,
+        mayShowUserSettingsDialog: true
+      });
+
+      if (!mounted) {
+        return;
+      }
+
+      const nextGps: GpsPoint = {
+        ...gps,
+        latitude: current.coords.latitude,
+        longitude: current.coords.longitude,
+        accuracy: current.coords.accuracy ? Math.round(current.coords.accuracy) : gps.accuracy,
+        altitude: current.coords.altitude ? Math.round(current.coords.altitude) : gps.altitude
+      };
+      setCaptureGps(nextGps);
+      await saveLastKnownLocation({
+        latitude: nextGps.latitude,
+        longitude: nextGps.longitude,
+        accuracy: nextGps.accuracy,
+        altitude: nextGps.altitude,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    detectLocation();
+
+    return () => {
+      mounted = false;
+    };
+  }, [gps]);
+
+  async function handleCapture() {
+    if (capturing) {
+      return;
+    }
+
+    if (!cameraPermission?.granted) {
+      const permission = await requestCameraPermission();
+      if (!permission.granted) {
+        navigation.navigate(screens.captureForm, {
+          capturedAt,
+          gps: captureGps
+        });
+        return;
+      }
+
+      return;
+    }
+
+    if (!cameraReady) {
+      return;
+    }
+
+    setCapturing(true);
+    const timestamp = new Date().toISOString();
+    setCapturedAt(timestamp);
+
+    try {
+      const photo = cameraReady
+        ? await cameraRef.current?.takePictureAsync({
+            quality: 0.82,
+            skipProcessing: false
+          })
+        : undefined;
+      const photoUri = await persistPhoto(photo?.uri, timestamp);
+
+      navigation.navigate(screens.captureForm, {
+        photoUri,
+        capturedAt: timestamp,
+        gps: captureGps
+      });
+    } finally {
+      setCapturing(false);
+    }
+  }
+
+  const capturedDate = new Date(capturedAt);
+  const formattedDate = capturedDate.toLocaleDateString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  });
+  const formattedTime = capturedDate.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  const showCamera = cameraPermission?.granted;
 
   return (
     <SafeAreaView style={styles.screen}>
-      {/* TODO: Replace this mocked viewfinder with expo-camera preview and captured photo URI. */}
       <View style={styles.viewfinder}>
-        <View style={styles.forestHint}>
-          <View style={styles.treeA} />
-          <View style={styles.treeB} />
-          <View style={styles.treeC} />
-        </View>
+        {showCamera ? (
+          <CameraView
+            ref={cameraRef}
+            animateShutter
+            facing="back"
+            flash={flash ? "on" : "off"}
+            style={styles.camera}
+            onCameraReady={() => setCameraReady(true)}
+          />
+        ) : (
+          <View style={styles.forestHint}>
+            <View style={styles.treeA} />
+            <View style={styles.treeB} />
+            <View style={styles.treeC} />
+            <Pressable style={({ pressed }) => [styles.permissionButton, pressed && styles.pressed]} onPress={requestCameraPermission}>
+              <Text style={styles.permissionText}>Aktifkan Kamera</Text>
+            </Pressable>
+          </View>
+        )}
 
         <View style={styles.topOverlay}>
-          <Text style={styles.overlayText}>📡 ±{gps.accuracy}m</Text>
+          <Text style={styles.overlayText}>📡 ±{captureGps.accuracy}m</Text>
           <Text style={styles.overlayMono}>
-            {gps.latitude.toFixed(4)}° | {gps.longitude.toFixed(4)}°
+            {captureGps.latitude.toFixed(4)}° | {captureGps.longitude.toFixed(4)}°
           </Text>
-          <Text style={styles.overlayText}>Alt: {gps.altitude}m</Text>
+          <Text style={styles.overlayText}>Alt: {captureGps.altitude}m</Text>
         </View>
 
         <View style={styles.crosshair}>
@@ -36,9 +185,9 @@ export function CaptureScreen({ navigation }: Props) {
         </View>
 
         <View style={styles.bottomOverlay}>
-          <Text style={styles.overlayText}>📅 01 Mei 2026</Text>
-          <Text style={styles.overlayText}>🕙 10:44 WIB</Text>
-          <Text style={[styles.overlayText, styles.blockText]}>{gps.block}</Text>
+          <Text style={styles.overlayText}>📅 {formattedDate}</Text>
+          <Text style={styles.overlayText}>🕙 {formattedTime} WIB</Text>
+          <Text style={[styles.overlayText, styles.blockText]}>{captureGps.block}</Text>
         </View>
       </View>
 
@@ -51,12 +200,12 @@ export function CaptureScreen({ navigation }: Props) {
           accessibilityRole="button"
           accessibilityLabel="Ambil foto"
           style={({ pressed }) => [styles.shutterOuter, pressed && styles.pressed]}
-          onPress={() => navigation.navigate(screens.captureForm)}
+          onPress={handleCapture}
         >
-          <View style={styles.shutterInner} />
+          {capturing ? <ActivityIndicator color={colors.forest} /> : <View style={styles.shutterInner} />}
         </Pressable>
 
-        <Pressable style={({ pressed }) => [styles.controlButton, pressed && styles.pressed]}>
+        <Pressable style={({ pressed }) => [styles.controlButton, flash && styles.controlActive, pressed && styles.pressed]} onPress={() => setFlash((value) => !value)}>
           <Text style={styles.controlText}>⚡</Text>
         </Pressable>
       </View>
@@ -77,9 +226,25 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     overflow: "hidden"
   },
+  camera: {
+    ...StyleSheet.absoluteFillObject
+  },
   forestHint: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#172019"
+    backgroundColor: "#172019",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  permissionButton: {
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    backgroundColor: colors.gold
+  },
+  permissionText: {
+    color: colors.soil,
+    fontSize: 13,
+    fontWeight: "900"
   },
   treeA: {
     position: "absolute",
@@ -204,6 +369,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.1)",
     alignItems: "center",
     justifyContent: "center"
+  },
+  controlActive: {
+    backgroundColor: "rgba(233,196,106,0.28)"
   },
   controlText: {
     color: colors.white,

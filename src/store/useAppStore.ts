@@ -1,21 +1,26 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { initialActivities, initialNotes, mockGps } from "../data/mockData";
+import { mockGps } from "../data/mockData";
 import { saveCaptureNotes } from "../storage/localStorage";
-import { Activity, CaptureCategory, CaptureNote, GpsPoint, PlantCondition } from "../types";
+import { Activity, AuthUser, CaptureCategory, CaptureNote, GpsPoint, PlantCondition } from "../types";
 
 // TODO: Replace mockGps with expo-location foreground updates and persisted last-known position.
 type NewNoteInput = {
   category: CaptureCategory;
   notes: string;
   condition: PlantCondition;
+  gps?: GpsPoint;
+  photoUri?: string;
+  createdAt?: string;
 };
 
 type AppStore = {
   online: boolean;
   isSyncing: boolean;
+  authUser: AuthUser | null;
   gps: GpsPoint;
   notes: CaptureNote[];
   activities: Activity[];
+  setAuthUser: (user: AuthUser | null) => void;
   setInitialNotes: (notes: CaptureNote[]) => void;
   toggleOnline: () => void;
   addCapturedNote: (input: NewNoteInput) => Promise<CaptureNote>;
@@ -24,14 +29,39 @@ type AppStore = {
 
 export const AppStoreContext = createContext<AppStore | null>(null);
 
+function createActivityFromNote(note: CaptureNote): Activity {
+  return {
+    id: `ACT-${note.id}`,
+    noteId: note.id,
+    icon: note.photoUri ? "📷" : "📍",
+    title: note.category.charAt(0).toUpperCase() + note.category.slice(1),
+    location: note.gps.block,
+    time: new Date(note.createdAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+    createdAt: note.createdAt,
+    syncStatus: note.syncStatus
+  };
+}
+
+function getNextNoteId(notes: CaptureNote[]) {
+  const nextNumber =
+    notes.reduce((largest, note) => {
+      const parsed = Number(note.id.replace("TG-", ""));
+      return Number.isFinite(parsed) ? Math.max(largest, parsed) : largest;
+    }, 0) + 1;
+
+  return `TG-${String(nextNumber).padStart(4, "0")}`;
+}
+
 export function useCreateAppStore() {
   const [online, setOnline] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [notes, setNotes] = useState<CaptureNote[]>(initialNotes);
-  const [activities, setActivities] = useState<Activity[]>(initialActivities);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [notes, setNotes] = useState<CaptureNote[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
 
   const setInitialNotes = useCallback((loadedNotes: CaptureNote[]) => {
     setNotes(loadedNotes);
+    setActivities(loadedNotes.map(createActivityFromNote));
   }, []);
 
   const persistNotes = useCallback(async (nextNotes: CaptureNote[]) => {
@@ -41,26 +71,20 @@ export function useCreateAppStore() {
 
   const addCapturedNote = useCallback(
     async (input: NewNoteInput) => {
-      const createdAt = new Date().toISOString();
-      const nextNumber = notes.length + 45;
+      const createdAt = input.createdAt ?? new Date().toISOString();
+      const noteGps = input.gps ?? mockGps;
       const note: CaptureNote = {
-        id: `TG-${String(nextNumber).padStart(4, "0")}`,
+        id: getNextNoteId(notes),
         category: input.category,
         notes: input.notes,
         condition: input.condition,
-        gps: mockGps,
+        gps: noteGps,
         createdAt,
+        photoUri: input.photoUri,
         syncStatus: "pending"
       };
       const nextNotes = [note, ...notes];
-      const activity: Activity = {
-        id: `ACT-${Date.now()}`,
-        icon: "📷",
-        title: "Foto Tanaman",
-        location: mockGps.block,
-        time: new Date(createdAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
-        syncStatus: "pending"
-      };
+      const activity = createActivityFromNote(note);
 
       setActivities((current) => [activity, ...current]);
       await persistNotes(nextNotes);
@@ -99,15 +123,17 @@ export function useCreateAppStore() {
     () => ({
       online,
       isSyncing,
+      authUser,
       gps: mockGps,
       notes,
       activities,
+      setAuthUser,
       setInitialNotes,
       toggleOnline: () => setOnline((value) => !value),
       addCapturedNote,
       syncPendingRecords
     }),
-    [activities, addCapturedNote, isSyncing, notes, online, setInitialNotes, syncPendingRecords]
+    [activities, addCapturedNote, authUser, isSyncing, notes, online, setInitialNotes, syncPendingRecords]
   );
 }
 

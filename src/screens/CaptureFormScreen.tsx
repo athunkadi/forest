@@ -1,7 +1,7 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { LinearGradient } from "expo-linear-gradient";
 import { useState } from "react";
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { colors } from "../constants/colors";
 import { screens } from "../constants/screens";
 import { useAppStore } from "../store/useAppStore";
@@ -16,12 +16,24 @@ const conditions: Array<{ icon: string; label: PlantCondition }> = [
   { icon: "😟", label: "Buruk" }
 ];
 
-export function CaptureFormScreen({ navigation }: Props) {
+export function CaptureFormScreen({ navigation, route }: Props) {
   const { addCapturedNote, gps } = useAppStore();
+  const capturedGps = route.params?.gps ?? gps;
+  const photoUri = route.params?.photoUri;
+  const capturedAt = route.params?.capturedAt ?? new Date().toISOString();
   const [category, setCategory] = useState<CaptureCategory>("tanaman");
   const [condition, setCondition] = useState<PlantCondition>("Baik");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const capturedDate = new Date(capturedAt);
+  const formattedTime = capturedDate.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  const formattedDateTime = capturedDate.toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 
   async function handleSave() {
     if (saving) {
@@ -29,7 +41,14 @@ export function CaptureFormScreen({ navigation }: Props) {
     }
 
     setSaving(true);
-    const saved = await addCapturedNote({ category, condition, notes });
+    const saved = await addCapturedNote({
+      category,
+      condition,
+      notes: notes.trim(),
+      gps: capturedGps,
+      photoUri,
+      createdAt: capturedAt
+    });
     setSaving(false);
     navigation.replace(screens.captureSuccess, { noteId: saved.id });
   }
@@ -45,11 +64,17 @@ export function CaptureFormScreen({ navigation }: Props) {
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.photoPreview}>
-          {/* TODO: Persist real image files with expo-file-system after camera capture is enabled. */}
-          <Text style={styles.photoIcon}>📷</Text>
+          {photoUri ? (
+            <Image source={{ uri: photoUri }} style={styles.photoImage} resizeMode="cover" />
+          ) : (
+            <View style={styles.photoPlaceholder}>
+              <Text style={styles.photoIcon}>📷</Text>
+              <Text style={styles.photoPlaceholderText}>Foto belum tersedia</Text>
+            </View>
+          )}
           <View style={styles.photoMeta}>
             <Text style={styles.photoMetaText}>
-              {gps.latitude.toFixed(4)}° | {gps.longitude.toFixed(4)}° · 10:44 WIB
+              {capturedGps.latitude.toFixed(4)}° | {capturedGps.longitude.toFixed(4)}° · {formattedTime} WIB
             </Text>
           </View>
         </View>
@@ -59,10 +84,10 @@ export function CaptureFormScreen({ navigation }: Props) {
           <View style={styles.locationContent}>
             <Text style={styles.locationTitle}>Lokasi Terdeteksi</Text>
             <Text style={styles.mono}>
-              {gps.latitude.toFixed(6)}, {gps.longitude.toFixed(6)} · ±{gps.accuracy}m
+              {capturedGps.latitude.toFixed(6)}, {capturedGps.longitude.toFixed(6)} · ±{capturedGps.accuracy}m
             </Text>
             <Text style={styles.locationSub}>
-              {gps.area} · {gps.block}
+              {capturedGps.area} · {capturedGps.block} · {formattedDateTime} WIB
             </Text>
           </View>
           <View style={styles.gpsBadge}>
@@ -86,7 +111,7 @@ export function CaptureFormScreen({ navigation }: Props) {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Catatan Opsional</Text>
+          <Text style={styles.label}>Catatan (Opsional)</Text>
           <TextInput
             value={notes}
             onChangeText={setNotes}
@@ -176,6 +201,20 @@ const styles = StyleSheet.create({
   },
   photoIcon: {
     fontSize: 42
+  },
+  photoImage: {
+    width: "100%",
+    height: "100%"
+  },
+  photoPlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6
+  },
+  photoPlaceholderText: {
+    color: colors.canopy,
+    fontSize: 12,
+    fontWeight: "900"
   },
   photoMeta: {
     position: "absolute",

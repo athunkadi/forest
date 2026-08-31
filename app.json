@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "ForestTrack",
-    "slug": "foresttrack",
+    "slug": "forest",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -34,8 +34,9 @@
         "root": "src/navigation"
       },
       "eas": {
-        "projectId": "e7818941-50bb-4017-a6c2-ce28bf459202"
+        "projectId": "820f47a5-5c8b-4c75-b7fc-9e9871725360"
       }
-    }
+    },
+    "owner": "athunkadi94s-team"
   }
 }

@@ -1,3 +1,4 @@
+import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo, useState } from "react";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
 import { BottomNav } from "../components/BottomNav";
@@ -5,24 +6,35 @@ import { SyncBadge } from "../components/SyncBadge";
 import { StatusBarCustom } from "../components/StatusBarCustom";
 import { colors } from "../constants/colors";
 import { screens } from "../constants/screens";
-import { mockGps } from "../data/mockData";
 import { useAppStore } from "../store/useAppStore";
-import { CaptureNote } from "../types";
+import { CaptureCategory, CaptureNote, RootStackParamList } from "../types";
 
-type Filter = "Semua" | "Tagging" | "Track" | "Foto";
+type Props = NativeStackScreenProps<RootStackParamList, typeof screens.history>;
+type Filter = "Semua" | CaptureCategory;
 
-const filters: Filter[] = ["Semua", "Tagging", "Track", "Foto"];
+const filters: Filter[] = ["Semua", "tanaman", "pohon tumbang", "jejak satwa", "lainnya"];
 
-export function HistoryScreen() {
+export function HistoryScreen({ navigation }: Props) {
   const { notes, online } = useAppStore();
   const [filter, setFilter] = useState<Filter>("Semua");
 
   const groups = useMemo(() => {
-    const visibleNotes = filter === "Semua" || filter === "Tagging" || filter === "Foto" ? notes : [];
-    return [
-      { date: "Hari ini", items: visibleNotes.filter((note) => note.createdAt.startsWith("2026-05-01") || note.id > "TG-0044") },
-      { date: "Kemarin", items: visibleNotes.filter((note) => note.createdAt.startsWith("2026-04-30")) }
-    ].filter((group) => group.items.length > 0);
+    const visibleNotes = (filter === "Semua" ? notes : notes.filter((note) => note.category === filter)).slice();
+    const grouped = visibleNotes
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .reduce<Array<{ date: string; items: CaptureNote[] }>>((result, note) => {
+        const date = formatDateLabel(note.createdAt);
+        const existing = result.find((group) => group.date === date);
+        if (existing) {
+          existing.items.push(note);
+          return result;
+        }
+
+        result.push({ date, items: [note] });
+        return result;
+      }, []);
+
+    return grouped;
   }, [filter, notes]);
 
   return (
@@ -43,36 +55,31 @@ export function HistoryScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {filter === "Track" ? (
-          <View style={styles.group}>
-            <Text style={styles.groupTitle}>Kemarin</Text>
-            <View style={styles.listCard}>
-              <HistoryItem
-                item={{
-                  id: "TR-0010",
-                  category: "lainnya",
-                  notes: "Tracking jalur inspeksi utara.",
-                  condition: "Baik",
-                  gps: notes[0]?.gps ?? mockGps,
-                  createdAt: "2026-04-30T08:00:00.000Z",
-                  syncStatus: "synced"
-                }}
-                track
-                last
-              />
-            </View>
-          </View>
-        ) : (
+        {groups.length > 0 ? (
           groups.map((group) => (
             <View key={group.date} style={styles.group}>
               <Text style={styles.groupTitle}>{group.date}</Text>
               <View style={styles.listCard}>
                 {group.items.map((item, index) => (
-                  <HistoryItem key={item.id} item={item} last={index === group.items.length - 1} />
+                  <HistoryItem
+                    key={item.id}
+                    item={item}
+                    last={index === group.items.length - 1}
+                    onPress={() => navigation.navigate(screens.historyDetail, { noteId: item.id })}
+                  />
                 ))}
               </View>
             </View>
           ))
+        ) : (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>＋</Text>
+            <Text style={styles.emptyTitle}>Belum ada catatan</Text>
+            <Text style={styles.emptyText}>Data yang kamu input dari form pencatatan akan muncul di sini.</Text>
+            <Pressable style={({ pressed }) => [styles.emptyButton, pressed && styles.pressed]} onPress={() => navigation.navigate(screens.capture)}>
+              <Text style={styles.emptyButtonText}>Buat Catatan</Text>
+            </Pressable>
+          </View>
         )}
       </ScrollView>
       <BottomNav active={screens.history} />
@@ -80,28 +87,49 @@ export function HistoryScreen() {
   );
 }
 
-function HistoryItem({ item, last, track = false }: { item: CaptureNote; last?: boolean; track?: boolean }) {
+function HistoryItem({ item, last, onPress }: { item: CaptureNote; last?: boolean; onPress: () => void }) {
   return (
-    <View style={[styles.itemRow, !last && styles.divider]}>
-      <View style={[styles.itemIcon, track ? styles.trackIcon : styles.tagIcon]}>
-        <Text style={styles.itemIconText}>{track ? "🛰️" : "📍"}</Text>
+    <Pressable style={({ pressed }) => [styles.itemRow, !last && styles.divider, pressed && styles.pressed]} onPress={onPress}>
+      <View style={[styles.itemIcon, item.photoUri ? styles.photoIcon : styles.tagIcon]}>
+        <Text style={styles.itemIconText}>{item.photoUri ? "📷" : "📍"}</Text>
       </View>
       <View style={styles.itemContent}>
         <Text style={styles.itemTitle}>
-          {track ? "Track" : "Tagging"} <Text style={styles.itemId}>#{item.id}</Text>
+          {capitalize(item.category)} <Text style={styles.itemId}>#{item.id}</Text>
         </Text>
         <Text style={styles.itemMeta}>
-          {track ? "Jalur Utara · 08:00-10:00" : `${item.gps.block} · ${formatTime(item.createdAt)}`}
+          {item.gps.block} · {formatTime(item.createdAt)}
         </Text>
-        {!track ? <Text style={styles.condition}>● {item.condition}</Text> : null}
+        <Text style={styles.condition}>● {item.condition}</Text>
       </View>
       <SyncBadge status={item.syncStatus} compact />
-    </View>
+    </Pressable>
   );
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDateLabel(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return "Hari ini";
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return "Kemarin";
+  }
+
+  return date.toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" });
 }
 
 const styles = StyleSheet.create({
@@ -138,7 +166,8 @@ const styles = StyleSheet.create({
   filterText: {
     color: "rgba(255,255,255,0.88)",
     fontSize: 11,
-    fontWeight: "900"
+    fontWeight: "900",
+    textTransform: "capitalize"
   },
   filterTextActive: {
     color: colors.soil
@@ -188,8 +217,8 @@ const styles = StyleSheet.create({
   tagIcon: {
     backgroundColor: "#40916C22"
   },
-  trackIcon: {
-    backgroundColor: "#6B422622"
+  photoIcon: {
+    backgroundColor: "#F4A26122"
   },
   itemIconText: {
     fontSize: 18
@@ -217,5 +246,48 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "900",
     marginTop: 2
+  },
+  emptyState: {
+    borderRadius: 16,
+    backgroundColor: colors.white,
+    padding: 22,
+    alignItems: "center",
+    shadowColor: colors.dark,
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2
+  },
+  emptyIcon: {
+    color: colors.canopy,
+    fontSize: 32,
+    fontWeight: "900"
+  },
+  emptyTitle: {
+    color: colors.dark,
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 8
+  },
+  emptyText: {
+    color: colors.gray,
+    fontSize: 13,
+    lineHeight: 20,
+    textAlign: "center",
+    marginTop: 6
+  },
+  emptyButton: {
+    marginTop: 14,
+    borderRadius: 12,
+    backgroundColor: colors.leaf,
+    paddingHorizontal: 18,
+    paddingVertical: 11
+  },
+  emptyButtonText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: "900"
+  },
+  pressed: {
+    opacity: 0.76
   }
 });

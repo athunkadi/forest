@@ -12,7 +12,13 @@ export function SyncScreen() {
   const { isSyncing, notes, online, syncPendingRecords, toggleOnline } = useAppStore();
   const pending = notes.filter((note) => note.syncStatus !== "synced");
   const syncedCount = notes.filter((note) => note.syncStatus === "synced").length;
-  const lastSync = useMemo(() => (pending.length === 0 ? "Baru saja" : "30 Apr, 18:22"), [pending.length]);
+  const lastSync = useMemo(() => {
+    if (notes.length === 0) {
+      return "Belum ada data";
+    }
+
+    return pending.length === 0 ? "Semua sinkron" : "Menunggu";
+  }, [notes.length, pending.length]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -83,9 +89,11 @@ function PendingItem({ item, last }: { item: CaptureNote; last?: boolean }) {
       </View>
       <View style={styles.pendingContent}>
         <Text style={styles.pendingTitle}>
-          Tagging <Text style={styles.pendingId}>#{item.id}</Text>
+          {capitalize(item.category)} <Text style={styles.pendingId}>#{item.id}</Text>
         </Text>
-        <Text style={styles.pendingMeta}>{formatTime(item.createdAt)} · 1.2 MB</Text>
+        <Text style={styles.pendingMeta}>
+          {formatTime(item.createdAt)} · {item.photoUri ? "dengan foto" : "tanpa foto"}
+        </Text>
       </View>
       <SyncBadge status={item.syncStatus} compact />
     </View>
@@ -103,6 +111,10 @@ function SyncStat({ label, value, color }: { label: string; value: string; color
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 const styles = StyleSheet.create({
